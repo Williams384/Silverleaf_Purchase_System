@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SilverLeaf Academy Purchase Pipeline System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="theme-color" content="#2E7D32" />
+  <style>
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background: #b6c6b5;
+    }
+    .empty-state {
+      color: #9ca3af;
+      text-align: center;
+      padding-top: 2rem;
+      padding-bottom: 2rem;
+      font-size: 1rem;
+      font-style: italic;
+    }
+    .focus\:ring-green-600:focus {
+      --tw-ring-color: #2E7D32;
+      border-color: #2E7D32;
+      box-shadow: 0 0 0 2px #2E7D3222;
+    }
+    #request-modal-overlay {
+      background-color: rgba(0, 0, 0, 0.48);
+      transition: background-color .2s;
+    }
+  </style>
+  <script>
+    const users = {
+      'U1': { id: 'U1', name: 'Alice', role: 'Requester', department: 'HR' },
+      'U2': { id: 'U2', name: 'Bob', role: 'Requester', department: 'Marketing' },
+      'U3': { id: 'U3', name: 'Carol', role: 'Approver', department: 'Finance' },
+      'U4': { id: 'U4', name: 'Dave', role: 'Executor', department: 'Operations' }
+    };
+
+    function getDefaultState() {
+      return { requests: [], loggedInUser: null };
+    }
+
+    function getState() {
+      let stored = {};
+      try {
+        stored = JSON.parse(localStorage.getItem("purchasePipelineState")) || {};
+      } catch (e) {
+        stored = {};
+      }
+      if (!Array.isArray(stored.requests)) stored.requests = [];
+      if (stored.loggedInUser && stored.loggedInUser.id && users[stored.loggedInUser.id]) {
+        stored.loggedInUser = users[stored.loggedInUser.id];
+      } else {
+        stored.loggedInUser = null;
+      }
+      return stored;
+    }
+
+    function saveToLocalStorage(state) {
+      localStorage.setItem("purchasePipelineState", JSON.stringify(state));
+    }
+
+    function updateState(modifier) {
+      let state = getState();
+      if (typeof modifier === "function") {
+        state = modifier({ ...state });
+      }
+      if (!Array.isArray(state.requests)) state.requests = [];
+      saveToLocalStorage(state);
+    }
+
+    function withState(fn) {
+      fn(getState());
+    }
+
+    function parseAmount(amount) {
+      if (typeof amount === "string") {
+        return Number(amount.replace(/[^0-9.]/g, ""));
+      }
+      return Number(amount);
+    }
+
+    function formatCurrency(amount) {
+      const value = Number(amount) || 0;
+      return "Tshs " + value.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    function handleLogin(userIdRaw) {
+      const userId = (userIdRaw || '').trim().toUpperCase();
+      updateState(state => {
+        state.loggedInUser = users[userId] || null;
+        return state;
+      });
+      hideLoginOverlay();
+      renderDashboard();
+    }
+
+    function handleLogout() {
+      updateState(state => {
+        state.loggedInUser = null;
+        return state;
+      });
+      showLoginOverlay();
+    }
+
+    function showLoginOverlay() {
+      document.getElementById('login-overlay').style.display = 'flex';
+      document.getElementById('app-main').style.display = 'none';
+      document.getElementById('userId').value = '';
+      document.getElementById('login-error').classList.add('hidden');
+    }
+
+    function hideLoginOverlay() {
+      document.getElementById('login-overlay').style.display = 'none';
+      document.getElementById('app-main').style.display = '';
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const quickActions = document.querySelector(".font-bold.text-lg.text-[#2E7D32].mb-2")?.parentElement;
+      if (quickActions && !document.getElementById("reset-system-btn")) {
+        const resetLi = document.createElement("li");
+        resetLi.innerHTML = `
+          <button id="reset-system-btn" class="w-full bg-[#F6E05E] hover:bg-[#FAF089] rounded-lg px-4 py-2 text-yellow-800 font-semibold shadow transition flex items-center gap-2">
+            <svg class="h-5 w-5 text-yellow-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12a7.5 7.5 0 1113.29 4.243M15 19l2 2 2-2"/>
+            </svg>
+            Reset System
+          </button>
+        `;
+        quickActions.querySelector("ul")?.appendChild(resetLi);
+        resetLi.querySelector("#reset-system-btn").addEventListener("click", function() {
+          localStorage.clear();
+          window.location.reload();
+        });
+      }
+    });
+
+    function getStatusBadge(status) {
+      switch (status) {
+        case 'Pending':
+          return `<span class="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-yellow-400 text-yellow-900">${status}</span>`;
+        case 'Approved':
+          return `<span class="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-green-500 text-white">${status}</span>`;
+        case 'Completed':
+          return `<span class="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-blue-600 text-white">${status}</span>`;
+        case 'Rejected':
+          return `<span class="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-red-500 text-white">${status}</span>`;
+        default:
+          return `<span class="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-gray-200 text-gray-700">${status || "?"}</span>`;
+      }
+    }
+
+    function approveRequest(requestId) {
+      updateState(state => {
+        const req = (state.requests || []).find(r => r.id === requestId);
+        if (!req) return state;
+        if (req.status === "Pending") {
+          req.status = "Approved";
+          req.approvedBy = state.loggedInUser ? state.loggedInUser.id : "";
+        }
+        return state;
+      });
+      renderDashboard();
+    }
+
+    function rejectRequest(requestId) {
+      updateState(state => {
+        const req = (state.requests || []).find(r => r.id === requestId);
+        if (!req) return state;
+        if (req.status === "Pending") {
+          req.status = "Rejected";
+          req.approvedBy = state.loggedInUser ? state.loggedInUser.id : "";
+        }
+        return state;
+      });
+      renderDashboard();
+    }
+
+    function executeRequest(requestId) {
+      updateState(state => {
+        const req = (state.requests || []).find(r => r.id === requestId);
+        if (!req) return state;
+        if (req.status === "Approved") {
+          req.status = "Completed";
+          req.executedBy = state.loggedInUser ? state.loggedInUser.id : "";
+        }
+        return state;
+      });
+      renderDashboard();
+    }
+
+    function renderTable(role, requests, currentUser) {
+      if (role === "Approver" && currentUser && currentUser.id === "U3") {
+        const pendingRequests = Array.isArray(requests) ? requests.filter(r => r.status === "Pending") : [];
+        if (pendingRequests.length === 0) {
+          const div = document.createElement("div");
+          div.className = "flex flex-col items-center justify-center min-h-[200px]";
+          div.innerHTML = `
+            <div class="text-lg font-bold text-[#2E7D32] mb-2">Pending Approvals</div>
+            <div class="empty-state">No pending requests to review.</div>
+          `;
+          return div;
+        }
+        const div = document.createElement("div");
+        let html = `
+          <div class="overflow-x-auto">
+            <table class="min-w-full bg-white border border-gray-200 rounded-lg shadow mb-8">
+              <thead>
+                <tr>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">ID</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Title</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Description</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Amount</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Status</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pendingRequests
+                  .map(r => `
+                    <tr>
+                      <td class="px-3 py-2 border-b font-mono">${r.id}</td>
+                      <td class="px-3 py-2 border-b">${r.title}</td>
+                      <td class="px-3 py-2 border-b max-w-xs whitespace-normal">${r.desc || r.description || ""}</td>
+                      <td class="px-3 py-2 border-b">${formatCurrency(r.amount)}</td>
+                      <td class="px-3 py-2 border-b">${getStatusBadge(r.status)}</td>
+                      <td class="px-3 py-2 border-b flex gap-2">
+                        <button 
+                          class="bg-green-600 hover:bg-green-700 text-white font-semibold rounded px-3 py-1 text-sm shadow transition disabled:opacity-60"
+                          onclick="approveRequest('${r.id}')">
+                          Approve
+                        </button>
+                        <button
+                          class="bg-red-600 hover:bg-red-700 text-white font-semibold rounded px-3 py-1 text-sm shadow transition disabled:opacity-60"
+                          onclick="rejectRequest('${r.id}')">
+                          Reject
+                        </button>
+                      </td>
+                    </tr>
+                  `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+        div.innerHTML = html;
+        return div;
+      }
+
+      if (role === "Executor" && currentUser && currentUser.id === "U4") {
+        const actionable = Array.isArray(requests) ? requests.filter(r => r.status === "Approved") : [];
+        if (actionable.length === 0) {
+          const div = document.createElement("div");
+          div.className = "flex flex-col items-center justify-center min-h-[200px]";
+          div.innerHTML = `
+            <div class="text-lg font-bold text-[#2E7D32] mb-2">Ready to Execute</div>
+            <div class="empty-state">No approved requests waiting for execution.</div>
+          `;
+          return div;
+        }
+        const div = document.createElement("div");
+        div.innerHTML = `
+          <div class="overflow-x-auto">
+            <table class="min-w-full bg-white border border-gray-200 rounded-lg shadow">
+              <thead>
+                <tr>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">ID</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Title</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Description</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Amount</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Status</th>
+                  <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${actionable
+                  .map(r => `
+                    <tr>
+                      <td class="px-3 py-2 border-b font-mono">${r.id}</td>
+                      <td class="px-3 py-2 border-b">${r.title}</td>
+                      <td class="px-3 py-2 border-b max-w-xs whitespace-normal">${r.desc || r.description || ""}</td>
+                      <td class="px-3 py-2 border-b">${formatCurrency(r.amount)}</td>
+                      <td class="px-3 py-2 border-b">${getStatusBadge(r.status)}</td>
+                      <td class="px-3 py-2 border-b">
+                        <button
+                          class="bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded px-3 py-1 text-sm shadow transition"
+                          onclick="executeRequest('${r.id}')">
+                          Execute
+                        </button>
+                      </td>
+                    </tr>
+                  `)
+                  .join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+        return div;
+      }
+
+      const div = document.createElement("div");
+      div.innerHTML = `
+        <div class="overflow-x-auto">
+          <table class="min-w-full bg-white border border-gray-200 rounded-lg shadow">
+            <thead>
+              <tr>
+                <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">ID</th>
+                <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Title</th>
+                <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Description</th>
+                <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Amount</th>
+                <th class="px-3 py-2 font-semibold text-left text-gray-700 border-b">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${requests.map(r => `
+                <tr>
+                  <td class="px-3 py-2 border-b font-mono">${r.id}</td>
+                  <td class="px-3 py-2 border-b">${r.title}</td>
+                  <td class="px-3 py-2 border-b max-w-xs whitespace-normal">${r.desc || r.description || ""}</td>
+                  <td class="px-3 py-2 border-b">${formatCurrency(r.amount)}</td>
+                  <td class="px-3 py-2 border-b">${getStatusBadge(r.status)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      return div;
+    }
+
+    function renderDashboard() {
+      const main = document.getElementById('dashboard-content');
+      if (main) main.innerHTML = '';
+      withState(state => {
+        const currentUser = state.loggedInUser;
+        if (!currentUser) return;
+        document.getElementById("main-header-title").textContent = `SilverLeaf Academy - ${currentUser.role} Dashboard`;
+        document.getElementById("main-header-username").textContent = `${currentUser.name} (${currentUser.department})`;
+        document.getElementById("user-display-name").textContent = currentUser.name;
+        const initials = currentUser.name.split(' ').map(s => s[0]).join('').toUpperCase();
+        document.getElementById("user-display-initials").textContent = initials;
+        document.getElementById('sidebar-role-section').innerHTML = renderSidebarSection(currentUser.role);
+
+        const titleMapping = {
+          'Requester': { title: 'Purchase Requests', desc: 'Manage and track your purchase requests.' },
+          'Approver': { title: 'Approve Requests', desc: 'Review and authorize pending requests.' },
+          'Executor': { title: 'Execute Requests', desc: 'Process and fulfill approved requests.' }
+        };
+
+        const dashboardTitleEl = document.getElementById('dashboard-section-title');
+        const dashboardDescEl = document.getElementById('dashboard-section-desc');
+        if (dashboardTitleEl && dashboardDescEl && titleMapping[currentUser.role]) {
+          dashboardTitleEl.textContent = titleMapping[currentUser.role].title;
+          dashboardDescEl.textContent = titleMapping[currentUser.role].desc;
+        }
+
+        const requests = Array.isArray(state.requests) ? state.requests : [];
+        let requestsByRole, totalRequests, totalPending, totalApproved, totalSpend;
+
+        if (currentUser.role === "Requester") {
+          requestsByRole = requests.filter(r => r.requesterId === currentUser.id);
+          totalRequests = requestsByRole.length;
+          totalPending = requestsByRole.filter(r => r.status === "Pending").length;
+          totalApproved = requestsByRole.filter(r => r.status === "Approved").length;
+          const approvedRequests = requestsByRole.filter(req => req.status === 'Approved' || req.status === 'Completed');
+          totalSpend = approvedRequests.reduce((sum, req) => sum + parseAmount(req.amount), 0);
+          document.getElementById('stat-total-spend').textContent =
+            'Tshs ' + Number(totalSpend).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        } else {
+          requestsByRole = requests;
+          totalRequests = requestsByRole.length;
+          totalPending = requestsByRole.filter(r => r.status === "Pending").length;
+          totalApproved = requestsByRole.filter(r => r.status === "Approved").length;
+          const approvedRequests = requestsByRole.filter(req => req.status === 'Approved' || req.status === 'Completed');
+          totalSpend = approvedRequests.reduce((sum, req) => sum + parseAmount(req.amount), 0);
+          document.getElementById('stat-total-spend').textContent =
+            'Tshs ' + Number(totalSpend).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        document.getElementById('stat-total-requests').textContent = totalRequests;
+        document.getElementById('stat-pending').textContent = totalPending;
+        document.getElementById('stat-approved').textContent = totalApproved;
+
+        const newReqBtn = document.querySelector('button[onclick*="openRequestModal"]');
+        if (newReqBtn) {
+          newReqBtn.style.display = (currentUser.role === 'Requester') ? 'flex' : 'none';
+        }
+        const sidebarNewReqBtn = document.getElementById("sidebar-new-request-btn");
+        if (sidebarNewReqBtn) {
+          sidebarNewReqBtn.classList.add("hidden");
+          sidebarNewReqBtn.style.display = "none";
+        }
+        if (!main) { return; }
+        let table = renderTable(currentUser.role, requestsByRole, currentUser);
+        if (main && table) main.appendChild(table);
+      });
+    }
+
+    function renderEmptyRequests(role) {
+      let sectionTitle = "";
+      if (role === "Requester") sectionTitle = "Your Requests";
+      else if (role === "Approver") sectionTitle = "Pending Approvals";
+      else if (role === "Executor") sectionTitle = "Ready to Execute";
+      else sectionTitle = "History";
+      const div = document.createElement("div");
+      div.className = "flex flex-col items-center justify-center min-h-[200px]";
+      div.innerHTML = `<div class="text-lg font-bold text-[#2E7D32] mb-2">${sectionTitle}</div>
+        <div class="empty-state">No requests found.</div>`;
+      return div;
+    }
+
+    function renderSidebarSection(role) {
+      if (role === "Requester") {
+        return `<div class="mt-1 text-green-200 text-sm italic">Add new requests and track your purchase pipeline.</div>`;
+      } else if (role === "Approver") {
+        return `<div class="mt-1 text-green-200 text-sm italic">Review and approve pending purchase requests.</div>`;
+      } else if (role === "Executor") {
+        return `<div class="mt-1 text-green-200 text-sm italic">Complete and mark approved requests as executed.</div>`;
+      }
+      return `<div class="mt-1 text-green-100">No extra actions</div>`;
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      document.getElementById("sidebar-dashboard").addEventListener("click", renderDashboard);
+      document.getElementById("logoutBtn").addEventListener("click", handleLogout);
+      document.getElementById("loginBtn").addEventListener("click", function () {
+        const input = document.getElementById("userId");
+        const userIdRaw = input.value;
+        const userId = (userIdRaw || '').trim().toUpperCase();
+        const errorMsg = document.getElementById("login-error");
+        if (!userId) {
+          errorMsg.textContent = "Please enter a User ID.";
+          errorMsg.classList.remove("hidden");
+          return;
+        }
+        if (!users.hasOwnProperty(userId)) {
+          errorMsg.textContent = "Invalid User ID. Please try again.";
+          errorMsg.classList.remove("hidden");
+          return;
+        }
+        handleLogin(userId);
+      });
+      const loginInput = document.getElementById('userId');
+      if (loginInput) {
+        loginInput.addEventListener('input', function () {
+          loginInput.value = loginInput.value.toUpperCase();
+          document.getElementById("login-error").classList.add("hidden");
+        });
+        loginInput.addEventListener('keydown', function (e) {
+          if (e.key === "Enter") {
+            document.getElementById("loginBtn").click();
+          }
+        });
+      }
+    });
+
+    function openRequestModal() {
+      const modal = document.getElementById("request-modal-overlay");
+      if (modal) {
+        modal.classList.remove("hidden");
+        setTimeout(() => {
+          const f = document.querySelector("#request-modal-form #request-title");
+          if (f) f.focus();
+        }, 100);
+      }
+    }
+
+    function closeRequestModal() {
+      document.getElementById("request-modal-overlay")?.classList.add("hidden");
+      clearModalForm();
+    }
+
+    function clearModalForm() {
+      const form = document.getElementById("request-modal-form");
+      if (form) {
+        form.reset();
+        document.getElementById("add-request-error-modal")?.classList.add("hidden");
+      }
+    }
+
+    function addRequest({ title, amount, desc }) {
+      let state = getState();
+      const user = state.loggedInUser;
+      if (!user || !title || !desc || isNaN(amount) || amount <= 0) return false;
+      const ids = state.requests.map(r => r.id.replace("REQ-", "")).map(x => parseInt(x, 10)).filter(n => !isNaN(n));
+      const nextNum = ids.length ? (Math.max(...ids) + 1) : 1;
+      const id = `REQ-${String(nextNum).padStart(3, "0")}`;
+      const req = {
+        id,
+        title,
+        amount: Number(amount),
+        description: desc,
+        desc,
+        requesterId: user.id,
+        status: 'Pending',
+        created: new Date().toISOString().slice(0, 10),
+        approvedBy: "",
+        executedBy: ""
+      };
+      state.requests.push(req);
+      saveToLocalStorage(state);
+      renderDashboard();
+      return true;
+    }
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const form = document.getElementById("request-modal-form");
+      if (form) {
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          const title = form.querySelector("#request-title").value.trim();
+          const amount = Number(form.querySelector("#request-amount").value.trim());
+          const desc = form.querySelector("#request-desc").value.trim();
+          const errorEl = form.querySelector("#add-request-error-modal");
+          if (!title || !desc || isNaN(amount) || amount <= 0) {
+            errorEl.textContent = "Please fill all fields correctly. Amount must be positive.";
+            errorEl.classList.remove("hidden");
+            return;
+          }
+          errorEl.classList.add("hidden");
+          const ok = addRequest({ title, amount, desc });
+          if (ok) {
+            closeRequestModal();
+          }
+        });
+
+        document.getElementById("request-modal-cancel")?.addEventListener("click", closeRequestModal);
+        document.getElementById("request-modal-close-x")?.addEventListener("click", closeRequestModal);
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const overlay = document.getElementById("request-modal-overlay");
+      if (overlay) {
+        overlay.addEventListener("mousedown", function (e) {
+          if (e.target === overlay) {
+            closeRequestModal();
+          }
+        });
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const state = getState();
+      if (!state.loggedInUser) {
+        showLoginOverlay();
+      } else {
+        hideLoginOverlay();
+        renderDashboard();
+      }
+      const cancelBtn = document.getElementById("request-modal-cancel");
+      if (cancelBtn) cancelBtn.addEventListener("click", closeRequestModal);
+
+      const loginInput = document.getElementById('userId');
+      if (loginInput) {
+        loginInput.addEventListener('input', function () {
+          loginInput.value = loginInput.value.toUpperCase();
+          document.getElementById("login-error").classList.add("hidden");
+        });
+        loginInput.addEventListener('keydown', function (e) {
+          if (e.key === "Enter") {
+            document.getElementById("loginBtn").click();
+          }
+        });
+      }
+    });
+
+    function updateRequestStatus(requestId, newStatus) {
+      updateState(state => {
+        const req = (state.requests || []).find(r => r.id === requestId);
+        if (!req) return state;
+        if (newStatus === 'Approved') {
+          req.status = 'Approved';
+          req.approvedBy = state.loggedInUser.id;
+        } else if (newStatus === 'Rejected') {
+          req.status = 'Rejected';
+          req.approvedBy = state.loggedInUser.id;
+        } else if (newStatus === 'Completed') {
+          req.status = 'Completed';
+          req.executedBy = state.loggedInUser.id;
+        }
+        return state;
+      });
+      renderDashboard();
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-gray-100 font-sans text-gray-800">
+  <div id="request-modal-overlay" class="fixed z-50 inset-0 hidden flex items-center justify-center transition-all">
+    <div class="flex items-center justify-center flex-1 min-h-[100vh] px-3">
+      <div class="bg-white rounded-2xl border border-[#D5E3DD] shadow-2xl px-8 py-8 w-full max-w-lg relative animate-fadein"
+           style="box-shadow: 0px 10px 32px 0px rgba(51, 85, 51, 0.14);">
+        <button id="request-modal-close-x"
+                class="absolute top-4 right-4 rounded-full p-2 hover:bg-gray-100 transition"
+                aria-label="Close">
+          <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <form id="request-modal-form" autocomplete="off">
+          <h3 class="pb-3 text-xl font-bold text-[#2E7D32]">Add Purchase Request</h3>
+          <label class="block mb-2">
+            <span class="text-sm text-gray-700">Title</span>
+            <input required id="request-title" name="title" type="text" class="border border-[#D5E3DD] rounded w-full mt-1 px-3 py-2 focus:ring-2 focus:ring-[#2E7D32] bg-white" maxlength="100" />
+          </label>
+          <label class="block mb-2">
+            <span class="text-sm text-gray-700">Amount (Tshs)</span>
+            <input required id="request-amount" name="amount" type="number" class="border border-[#D5E3DD] rounded w-full mt-1 px-3 py-2 focus:ring-2 focus:ring-[#2E7D32] bg-white" min="0" step="0.01" />
+          </label>
+          <label class="block mb-3">
+            <span class="text-sm text-gray-700">Description</span>
+            <textarea required id="request-desc" name="desc" class="border border-[#D5E3DD] rounded w-full mt-1 px-3 py-2 focus:ring-2 focus:ring-[#2E7D32] bg-white" rows="2" maxlength="200"></textarea>
+          </label>
+          <div class="flex gap-3 flex-row-reverse">
+            <button type="submit" class="bg-[#2E7D32] hover:bg-[#256325] text-white font-semibold rounded-lg px-6 py-2 shadow transition min-w-[135px]">Add Request</button>
+            <button type="button" id="request-modal-cancel" class="rounded-lg px-6 py-2 font-semibold border border-gray-300 text-gray-700 bg-white hover:bg-gray-100 transition min-w-[105px]">Cancel</button>
+          </div>
+          <div id="add-request-error-modal" class="text-red-500 text-sm mt-2 hidden"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div id="login-overlay" class="fixed inset-0 z-50 flex flex-col justify-center items-center bg-gray-100">
+    <div class="mb-3 text-center">
+      <h1 class="text-4xl font-extrabold text-[#2E7D32] mb-1 tracking-wide">SilverLeaf Academy</h1>
+      <h2 class="text-base font-medium text-gray-500 tracking-wide mb-2">Purchase Pipeline System</h2>
+    </div>
+    <div class="bg-white rounded-2xl shadow-2xl p-8 min-w-[340px] w-full max-w-xs flex flex-col items-center">
+      <svg class="w-16 h-16 mb-6 text-gray-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="8" r="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 18c0-2.21-1.79-4-4-4s-4 1.79-4 4"/>
+      </svg>
+      <h2 class="text-xl font-bold text-[#2E7D32] mb-4 tracking-wide">Member Sign In</h2>
+      <label for="userId" class="block w-full text-left mb-1 text-base font-semibold text-gray-700">User ID</label>
+      <input
+        id="userId"
+        type="text"
+        placeholder="Enter User ID (e.g., U1)"
+        autocomplete="username"
+        class="border border-[#D5E3DD] rounded-lg focus:ring-2 focus:ring-green-600 w-full px-3 py-2 mb-4 bg-white text-base font-mono tracking-wider"
+        style="text-transform:uppercase;"
+      />
+      <button id="loginBtn" class="w-full bg-[#2E7D32] hover:bg-[#256325] text-white font-semibold rounded-lg px-4 py-2 shadow transition">
+        Sign In
+      </button>
+      <div class="w-full flex flex-col items-center mt-2">
+        <span class="text-[11px] text-gray-400 tracking-wide mt-1">Authorized Personnel Only</span>
+      </div>
+      <p id="login-error" class="text-red-500 text-sm mt-3 hidden">Please enter a User ID.</p>
+    </div>
+  </div>
+  <div id="app-main" class="min-h-screen bg-background" style="display:none">
+    <aside class="fixed inset-y-0 left-0 z-30 bg-[#285335] text-white w-64 flex flex-col py-8 px-6 shadow-xl border-r border-r-[#D5E3DD]">
+      <div class="mb-10 flex flex-col gap-1">
+        <div class="flex items-center gap-2 mb-4">
+          <svg class="w-8 h-8 text-[#A4CBA7]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7m-9 2v8m4-8h4a2 2 0 012 2v8a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4"></path>
+          </svg>
+          <span class="font-bold text-lg text-[#E5F2E3] tracking-wide">SilverLeaf Academy</span>
+        </div>
+        <nav class="flex flex-col gap-1">
+          <button id="sidebar-dashboard" class="sidebar-btn flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[#2E7D32]/90 transition font-medium text-white shadow-sm">
+            <svg class="h-5 w-5 text-[#A4CBA7]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7m-9 2v8m4-8h4a2 2 0 012 2v8a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4"></path></svg>
+            <span>Dashboard</span>
+          </button>
+        </nav>
+      </div>
+      <div class="mt-8 flex flex-col gap-3 flex-1">
+        <div class="text-xs text-gray-100/70 uppercase tracking-widest mb-2">User</div>
+        <div class="flex items-center gap-2 mb-2">
+          <div class="w-8 h-8 bg-[#39623F] rounded-full flex items-center justify-center text-white font-bold text-lg">
+            <span id="user-display-initials"></span>
+          </div>
+          <span id="user-display-name" class="font-semibold text-white"></span>
+        </div>
+        <div id="sidebar-role-section" class="text-green-100 text-sm italic"></div>
+      </div>
+      <div style="height:2rem;flex-shrink:0"></div>
+    </aside>
+    <div class="pl-64 min-h-screen flex flex-col">
+      <header class="sticky top-0 z-20 bg-white shadow-sm border-b border-[#D5E3DD] px-8 py-5 flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-[#2E7D32] tracking-wide" id="main-header-title">SilverLeaf Academy - Dashboard</h1>
+          <span class="block text-sm mt-1 text-gray-500" id="main-header-username"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="logoutBtn"
+            class="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2 shadow transition text-base flex items-center gap-2">
+            <svg class="h-4 w-4 opacity-80" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
+            </svg>
+            Logout
+          </button>
+        </div>
+      </header>
+      <main class="flex-1 p-6 bg-[#F5F7F6]">
+        <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 class="text-2xl font-bold text-[#1F2D28]" id="dashboard-section-title">Purchase Requests</h1>
+            <p class="mt-1 text-sm text-gray-500" id="dashboard-section-desc">
+              Manage and track your purchase requests across all departments
+            </p>
+          </div>
+          <button onclick='openRequestModal()' class='bg-green-700 text-white px-4 py-2 rounded-lg transition hover:bg-green-800' style='display: flex; align-items: center; gap: 0.5rem;'><svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='5' x2='12' y2='19'></line><line x1='5' y1='12' x2='19' y2='12'></line></svg><span>New Request</span></button>
+        </div>
+        <div class="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div class="bg-white border border-[#D5E3DD] rounded-2xl px-6 py-5 shadow flex items-center justify-between">
+            <div>
+              <div class="text-base text-gray-700 font-semibold">Total Requests</div>
+              <div class="text-2xl font-bold mt-1" id="stat-total-requests">0</div>
+              <div class="text-xs text-gray-400 mt-1">This quarter</div>
+            </div>
+            <svg class="w-7 h-7 text-[#37894B]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M8 2v2M16 2v2M4 8h16"></path></svg>
+          </div>
+          <div class="bg-white border border-[#D5E3DD] rounded-2xl px-6 py-5 shadow flex items-center justify-between">
+            <div>
+              <div class="text-base text-gray-700 font-semibold" id="stat-pending-label">Pending Approval</div>
+              <div class="text-2xl font-bold mt-1" id="stat-pending">0</div>
+              <div class="text-xs text-gray-400 mt-1" id="stat-pending-desc">Awaiting review</div>
+            </div>
+            <svg class="w-7 h-7 text-[#C8B240]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+          </div>
+          <div class="bg-white border border-[#D5E3DD] rounded-2xl px-6 py-5 shadow flex items-center justify-between">
+            <div>
+              <div class="text-base text-gray-700 font-semibold">Approved</div>
+              <div class="text-2xl font-bold mt-1" id="stat-approved">0</div>
+              <div class="text-xs text-gray-400 mt-1">This quarter</div>
+            </div>
+            <svg class="w-7 h-7 text-[#478B4C]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M9 12l2 2l4-4"></path></svg>
+          </div>
+          <div class="bg-white border border-[#D5E3DD] rounded-2xl px-6 py-5 shadow flex items-center justify-between">
+            <div>
+              <div class="text-base text-gray-700 font-semibold">Total Spend</div>
+              <div class="text-2xl font-bold mt-1" id="stat-total-spend">Tshs 0.00</div>
+              <div class="text-xs text-gray-400 mt-1">Year to date</div>
+            </div>
+            <svg class="w-7 h-7 text-[#2E7D32]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-3.87 0-7 1.79-7 4s3.13 4 7 4 7-1.79 7-4-3.13-4-7-4zm0 0V4m0 8v8"></path></svg>
+          </div>
+        </div>
+        <script>
+          window.addEventListener('DOMContentLoaded', function() {
+            withState(state => {
+              const u = state.loggedInUser;
+              if (u && u.role === 'Executor') {
+                const label = document.getElementById('stat-pending-label');
+                const desc = document.getElementById('stat-pending-desc');
+                if (label) label.textContent = "Ready to Execute";
+                if (desc) desc.textContent = "Awaiting execution";
+              }
+            });
+          });
+        </script>
+        <div class="grid gap-6">
+          <div class="col-span-full bg-white border border-[#D5E3DD] rounded-2xl p-6 shadow-md">
+            <div id="dashboard-content"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
